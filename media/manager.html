@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{csp}}; style-src {{csp}}; img-src {{csp}};">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copilot Custom API</title>
+  <link rel="stylesheet" href="{{assets}}/manager.css">
+  <script src="{{assets}}/manager.js" defer></script>
+</head>
+<body>
+  <div class="workspace" id="workspace">
+    <header class="masthead">
+      <div class="identity">
+        <span class="mark" aria-hidden="true"><img src="{{assets}}/activity.png" alt=""></span>
+        <div><h1>Copilot Custom API</h1><p>Provider manager</p></div>
+      </div>
+      <label class="language-control"><span>Language</span>
+        <select id="language" aria-label="Language"><option value="auto">Follow VS Code</option><option value="zh-cn">简体中文</option><option value="en">English</option></select>
+      </label>
+    </header>
+    <div class="layout">
+      <nav class="rail" aria-label="Providers">
+        <div class="rail-heading"><h2>Providers</h2><span id="provider-count"></span></div>
+        <div id="provider-list" class="provider-list"></div>
+        <button type="button" class="new-provider" id="new-provider"><span aria-hidden="true">＋</span> Add provider</button>
+        <button type="button" class="model-settings-link" id="open-model-settings">Model settings</button>
+      </nav>
+      <main id="main">
+        <p id="loading" role="status">Loading providers…</p>
+        <section id="empty" class="empty" hidden>
+          <h2>No providers configured</h2>
+          <p>Add an API endpoint, then choose the models you want to use in Copilot Chat.</p>
+          <button class="primary" type="button" id="first-provider">Add provider</button>
+        </section>
+        <form id="editor" hidden novalidate>
+          <header class="editor-heading">
+            <div class="editor-title"><p id="provider-meta"></p><h2 id="provider-title"></h2><p id="provider-origin"></p></div>
+            <div class="actions">
+              <button type="button" id="revert" class="quiet">Revert changes</button>
+              <button type="submit" id="save" class="primary">Save provider</button>
+            </div>
+          </header>
+          <div class="notice" id="status" role="status" aria-live="polite" hidden></div>
+          <div class="notice warning" id="external-change" hidden>This provider changed in another window. Revert to load the latest version.</div>
+          <fieldset id="fields">
+            <div class="tabs" role="tablist" aria-label="Provider settings">
+              <button type="button" id="connection-tab" role="tab" aria-selected="true" aria-controls="connection-panel">Connection</button>
+              <button type="button" id="models-tab" role="tab" aria-selected="false" aria-controls="models-panel"><span>Models</span><span id="model-count" class="count"></span></button>
+            </div>
+            <section class="section" role="tabpanel" id="connection-panel" aria-labelledby="connection-tab">
+              <h3>Endpoint</h3>
+              <div class="fields-grid">
+                <label>Provider name <input id="name" name="name" required placeholder="My API"></label>
+                <label>API protocol <select id="protocol" name="protocol"></select></label>
+                <label class="endpoint-field">Endpoint URL <input id="url" name="url" required placeholder="https://api.example.com/v1" spellcheck="false"></label>
+                <label>URL handling
+                  <select name="urlMode"><option value="base">Append standard API route</option><option value="exact">Use exact URL</option></select>
+                </label>
+              </div>
+              <div class="subsection">
+                <h3>Credentials</h3>
+                <div class="fields-grid">
+                <label>Authentication
+                  <select id="auth" name="auth"><option value="default">Protocol default</option><option value="bearer">Bearer token</option><option value="custom">Custom API key header</option><option value="none">No authentication</option></select>
+                </label>
+                <label id="custom-auth" hidden>API key header <input name="authHeader" placeholder="api-key" spellcheck="false"></label>
+                <div id="credentials" class="wide">
+                  <label>API key <input id="api-key" name="apiKey" type="password" autocomplete="new-password" spellcheck="false"></label>
+                  <div class="credential-line"><span id="key-status" class="hint"></span><button type="button" id="clear-key" class="quiet">Clear saved key</button></div>
+                </div>
+                </div>
+              </div>
+              <details class="advanced" id="headers-details">
+                <summary>Request headers and session <span id="header-count" class="count"></span></summary>
+                <div class="details-body">
+                  <div class="fields-grid">
+                    <label>Default headers
+                      <select name="headerPreset"><option value="copilot">Copilot-compatible</option><option value="none">Protocol only</option></select>
+                    </label>
+                    <label>Session ID <input name="sessionId" placeholder="Generate automatically" spellcheck="false"></label>
+                  </div>
+                  <p class="hint request-hint">Session ID is sent as X-Session-Id with Copilot-compatible headers. Use ${sessionId} in custom header values.</p>
+                  <p class="hint">Add non-secret headers such as an API version or workspace ID.</p>
+                  <div id="headers" class="header-list"></div>
+                  <button type="button" id="add-header" class="quiet">＋ Add header</button>
+                </div>
+              </details>
+              <footer class="editor-footer"><button type="button" id="remove-provider" class="danger">Remove provider</button></footer>
+            </section>
+            <section class="section models-section" role="tabpanel" id="models-panel" aria-labelledby="models-tab" hidden>
+              <div class="section-heading">
+                <div><h3>Model catalog</h3><p>Choose which models appear in Copilot Chat.</p></div>
+                <div class="actions">
+                  <button type="button" id="discover">Fetch models</button>
+                  <button type="button" id="add-model" class="quiet">＋ Add manually</button>
+                </div>
+              </div>
+              <div id="models" class="model-list"></div>
+              <p id="empty-models" class="empty-models">Fetch the provider’s model list or enter a model ID manually.</p>
+            </section>
+          </fieldset>
+        </form>
+        <section id="model-settings" hidden aria-labelledby="model-settings-title">
+          <header class="editor-heading"><div class="editor-title"><h2 id="model-settings-title">Model settings</h2></div></header>
+          <form id="utility-settings" class="settings-card">
+            <div class="section-heading"><div><h3>Utility models</h3><p>Choose which models VS Code uses for background tasks in this profile.</p></div><button type="submit" id="save-utility" class="primary">Save</button></div>
+            <fieldset id="utility-fields" class="fields-grid">
+              <label>General utility model <select id="utility-model"></select></label>
+              <label>Small utility model <select id="utility-small-model"></select><small class="hint">Used for tasks such as Copilot session titles.</small></label>
+            </fieldset>
+            <p id="utility-status" class="notice" role="status" hidden></p>
+          </form>
+          <form id="routing-settings" class="settings-card" novalidate>
+            <div class="section-heading"><div><h3>Channel routing</h3><p>Copilot shows one entry per API model ID when routing is enabled.</p></div><button type="submit" id="save-routing" class="primary">Save</button></div>
+            <fieldset id="routing-fields">
+              <label class="inline-check"><input type="checkbox" id="routing-enabled"> Enable channel routing</label>
+              <p class="hint">Set channel priorities in each provider’s model settings. After two consecutive failures, a channel is skipped for one minute.</p>
+            </fieldset>
+            <p id="routing-status" class="notice" role="status" hidden></p>
+          </form>
+        </section>
+      </main>
+    </div>
+  </div>
+  <dialog id="catalog" aria-labelledby="catalog-title">
+    <header class="dialog-heading"><div><h2 id="catalog-title">Available models</h2><p id="catalog-count"></p></div><button type="button" id="close-catalog" class="quiet">Close</button></header>
+    <label class="catalog-search">Search by name or model ID <input id="catalog-search" type="search" autocomplete="off"></label>
+    <div id="catalog-results" class="catalog-results"></div>
+    <footer class="dialog-footer">
+      <details id="catalog-advanced">
+        <summary>Models URL override</summary>
+        <div class="catalog-override">
+          <label>Models URL <input id="catalog-url" placeholder="https://api.example.com/v1/models" spellcheck="false"></label>
+          <button type="button" id="retry-catalog">Fetch models</button>
+        </div>
+      </details>
+      <button type="button" id="add-selected" class="primary">Add selected</button>
+    </footer>
+    <p id="catalog-status" class="notice" role="status" aria-live="polite" hidden></p>
+  </dialog>
+  <template id="header-template">
+    <div class="header-row">
+      <label>Header name <input data-field="name" placeholder="X-Workspace-Id" spellcheck="false"></label>
+      <label>Value <input data-field="value" spellcheck="false"></label>
+      <button type="button" data-remove class="quiet" aria-label="Remove HTTP header">Remove</button>
+    </div>
+  </template>
+  <template id="model-template">
+    <details class="model">
+      <summary><span class="model-label"><strong data-title>New model</strong><span data-subtitle></span></span><span class="model-summary-meta" data-capabilities></span></summary>
+      <div class="model-body">
+        <div class="fields-grid">
+          <label>API model ID <input data-field="id" required spellcheck="false" placeholder="model-id"></label>
+          <label>Display name <input data-field="name" placeholder="Same as API model ID"></label>
+          <label>Input token limit <input data-field="maxInputTokens" type="number" min="1" step="1" required placeholder="128000"></label>
+          <label>Output token limit <input data-field="maxOutputTokens" type="number" min="1" step="1" required placeholder="8192"></label>
+        </div>
+        <div class="metadata-line">
+          <button type="button" data-defaults class="quiet">Get defaults from models.dev</button>
+          <span class="hint" data-metadata-status role="status"></span>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" data-field="streaming"> Streaming</label>
+          <label><input type="checkbox" data-field="toolCalling"> Tool calling</label>
+          <label><input type="checkbox" data-field="vision"> Image input</label>
+        </div>
+        <div class="fields-grid effort-settings">
+          <fieldset>
+            <legend>Supported reasoning efforts</legend>
+            <div class="effort-list" data-effort-list></div>
+            <div class="effort-add">
+              <input data-custom-effort aria-label="Custom reasoning effort" placeholder="Custom reasoning effort" spellcheck="false" autocomplete="off">
+              <button type="button" data-add-effort>Add effort</button>
+            </div>
+          </fieldset>
+          <label>Default reasoning effort <select data-field="reasoningEffort" disabled></select></label>
+        </div>
+        <details class="advanced model-advanced">
+          <summary>Advanced request settings</summary>
+          <div class="details-body">
+            <div class="fields-grid">
+              <label>Model API protocol <select data-field="protocol"><option value="">Use the provider protocol</option></select></label>
+              <label>Channel priority <input data-field="priority" type="number" min="0" step="1" placeholder="0"><small class="hint">Higher values are tried first for the same API model ID.</small></label>
+            </div>
+            <label class="inline-check request-hint" data-existing-endpoint hidden><input type="checkbox" data-field="useProviderUrl"> Use provider URL instead of the saved model URL</label>
+            <div data-model-headers class="header-list"></div>
+            <button type="button" data-add-model-header class="quiet">＋ Add model header</button>
+            <label class="request-hint">Additional request options (JSON) <textarea data-field="options" rows="4" spellcheck="false"></textarea></label>
+          </div>
+        </details>
+        <div class="model-actions"><button type="button" data-test>Test model</button><button type="button" data-remove class="danger">Remove model</button></div>
+      </div>
+    </details>
+  </template>
+  <dialog id="confirm" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <header class="dialog-heading"><h2 id="confirm-title"></h2></header>
+      <p id="confirm-body"></p>
+      <div class="actions"><button value="cancel" autofocus>Cancel</button><button value="confirm" class="primary" id="confirm-action"></button></div>
+    </form>
+  </dialog>
+</body>
+</html>

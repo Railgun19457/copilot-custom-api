@@ -1,0 +1,14 @@
+.git/**
+.gitignore
+.vscodeignore
+.vscode-test/**
+node_modules/**
+npm-debug.log*
+.DS_Store
+Thumbs.db
+src/**
+test/**
+tsconfig.json
+package-lock.json
+out/**/*.js.map
+*.vsix

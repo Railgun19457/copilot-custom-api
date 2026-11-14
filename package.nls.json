@@ -1,0 +1,11 @@
+{
+  "command.openManager": "Open Provider Manager",
+  "command.newProvider": "New Provider",
+  "command.openProvider": "Open Provider",
+  "command.manageWizard": "Manage Providers",
+  "command.addWizard": "Add Provider",
+  "view.providers": "Providers",
+  "view.welcome": "Add an API endpoint to use its models in Copilot Chat.\n[Add Provider](command:copilotCustomApi.newProvider)",
+  "setting.language": "Display language of the Copilot Custom API provider manager.",
+  "setting.providers": "Custom model API connections shared by your VS Code profiles. Run **Copilot Custom API: Open Provider Manager** to edit connections and manage their API keys."
+}

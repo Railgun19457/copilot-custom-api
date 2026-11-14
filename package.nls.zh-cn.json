@@ -1,0 +1,11 @@
+{
+  "command.openManager": "打开供应商管理器",
+  "command.newProvider": "新建供应商",
+  "command.openProvider": "打开供应商",
+  "command.manageWizard": "管理供应商（分步向导）",
+  "command.addWizard": "添加供应商（分步向导）",
+  "view.providers": "供应商",
+  "view.welcome": "添加 API 端点，在 Copilot Chat 中使用其模型。\n[添加供应商](command:copilotCustomApi.newProvider)",
+  "setting.language": "Copilot Custom API 供应商管理器的显示语言。",
+  "setting.providers": "在 VS Code 配置文件之间共用的自定义模型 API 连接。运行 **Copilot Custom API: 打开供应商管理器**，即可编辑连接和管理密钥。"
+}
