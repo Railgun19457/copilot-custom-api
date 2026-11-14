@@ -5,7 +5,7 @@ const { post, readEvents } = require('../out/http');
 const { chatCompletions, responses } = require('../out/protocols/openai');
 const { anthropicMessages } = require('../out/protocols/anthropic');
 const { geminiGenerateContent, geminiInteractions } = require('../out/protocols/gemini');
-const { answer, args, fixtureServer, mockReply, nonStreamingReply, png, protocolPaths, sse, toolName } = require('./fixture.cjs');
+const { answer, args, expectedUsage, fixtureServer, mockReply, nonStreamingReply, png, protocolPaths, sse, toolName } = require('./fixture.cjs');
 
 const adapters = {
   'chat-completions': chatCompletions,
@@ -78,8 +78,11 @@ for (const [protocol, adapter] of Object.entries(adapters)) {
       [JSON.stringify(nonStreamingReply(protocol)), 'application/json'],
     ]) {
       const parts = [];
-      await adapter.read(readEvents(new Response(data, { headers: { 'Content-Type': mime } }), true), part => parts.push(part));
+      const { usage } = await adapter.read(
+        readEvents(new Response(data, { headers: { 'Content-Type': mime } }), true), part => parts.push(part),
+      );
       assert.equal(parts.map(part => part.text).join(''), answer);
+      assert.deepEqual(usage, expectedUsage(protocol));
     }
   });
 
@@ -87,7 +90,7 @@ for (const [protocol, adapter] of Object.entries(adapters)) {
     const input = { model, url: new URL('https://example.test'), messages, tools, requireTool: true };
     const stream = sse(mockReply(protocol, adapter.build(input)));
     const parts = [];
-    const native = await adapter.read(
+    const { native, usage } = await adapter.read(
       readEvents(new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }), true), part => parts.push(part),
     );
     const call = parts.find(part => part.type === 'call');
@@ -96,6 +99,7 @@ for (const [protocol, adapter] of Object.entries(adapters)) {
     assert.deepEqual(call.input, args);
     assert.ok(native);
     assert.deepEqual(native.callIds, [call.id]);
+    assert.deepEqual(usage, expectedUsage(protocol));
     const next = adapter.build({
       ...input,
       messages: [
@@ -107,6 +111,21 @@ for (const [protocol, adapter] of Object.entries(adapters)) {
     assert.ok(mockReply(protocol, next).length);
   });
 }
+
+test('Chat Completions retries without automatically added usage options when the endpoint rejects them', async t => {
+  const fixture = await fixtureServer();
+  t.after(() => fixture.close());
+  const url = new URL('/legacy/v1/chat/completions', fixture.baseUrl);
+  const body = chatCompletions.build({ model, url, messages, tools: [], requireTool: false });
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  await assert.rejects(post(url, headers, body, new AbortController().signal), /HTTP 400/);
+  const response = await post(url, headers, body, new AbortController().signal, true);
+  const parts = [];
+  const { usage } = await chatCompletions.read(readEvents(response, true), part => parts.push(part));
+  assert.equal(parts.map(part => part.text).join(''), answer);
+  assert.equal(usage, undefined);
+  assert.deepEqual(fixture.hits, Array(3).fill(url.pathname));
+});
 
 test('HTTP requests reject redirects and cancellation stops an in-progress stream', async t => {
   const fixture = await fixtureServer();

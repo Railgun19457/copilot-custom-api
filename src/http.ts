@@ -1,4 +1,4 @@
-import { isObject } from './config';
+import { isObject, JsonObject } from './config';
 import { Event } from './protocols/types';
 
 const maxEventLength = 16 * 1024 * 1024;
@@ -19,9 +19,12 @@ function decode(value: string, name: string, json: boolean): Event {
   return { name, data, json };
 }
 
-export async function* readEvents(response: Response, streaming: boolean): AsyncGenerator<Event> {
+export function isEventStream(response: Response, streaming: boolean): boolean {
   const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
-  const sse = mime === 'text/event-stream' || (streaming && (!mime || mime === 'application/octet-stream'));
+  return mime === 'text/event-stream' || (streaming && (!mime || mime === 'application/octet-stream'));
+}
+
+export async function* readEvents(response: Response, streaming: boolean): AsyncGenerator<Event> {
   if (!response.body) {
     throw new Error('The endpoint returned an empty response.');
   }
@@ -56,7 +59,7 @@ export async function* readEvents(response: Response, streaming: boolean): Async
   }
 
   try {
-    if (!sse) {
+    if (!isEventStream(response, streaming)) {
       for (;;) {
         const chunk = await reader.read();
         if (chunk.done) {
@@ -113,14 +116,48 @@ export async function* readEvents(response: Response, streaming: boolean): Async
   }
 }
 
-export async function post(url: URL, headers: Headers, body: object, signal: AbortSignal): Promise<Response> {
-  return sendRequest(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+async function rejectsStreamOptions(response: Response): Promise<boolean> {
+  if (![400, 422].includes(response.status) || !response.body) {
+    return false;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let message = '';
+  try {
+    while (message.length < 8_192) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      message += decoder.decode(value.subarray(0, 8_192 - message.length), { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  return /\b(?:stream_options|include_usage)\b/i.test(message) &&
+    /unsupported|not supported|unrecognized|unknown|unexpected|not (?:allowed|permitted)|extra_(?:forbidden|fields)/i.test(message);
+}
+
+export async function post(
+  url: URL, headers: Headers, body: JsonObject, signal: AbortSignal, optionalStreamUsage = false,
+): Promise<Response> {
+  const init = { method: 'POST', headers, body: JSON.stringify(body), signal };
+  const response = await fetchResponse(url, init);
+  if (optionalStreamUsage && await rejectsStreamOptions(response)) {
+    const { stream_options: _, ...fallback } = body;
+    return sendRequest(url, { ...init, body: JSON.stringify(fallback) });
+  }
+  return checkResponse(response);
 }
 
 export async function sendRequest(url: URL, init: RequestInit): Promise<Response> {
-  let response: Response;
+  return checkResponse(await fetchResponse(url, init));
+}
+
+async function fetchResponse(url: URL, init: RequestInit): Promise<Response> {
   try {
-    response = await fetch(url, { ...init, redirect: 'manual' });
+    return await fetch(url, { ...init, redirect: 'manual' });
   } catch (error) {
     if (init.signal?.aborted) {
       throw init.signal.reason;
@@ -129,6 +166,9 @@ export async function sendRequest(url: URL, init: RequestInit): Promise<Response
     const suffix = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? ` (${code})` : '';
     throw new Error(`Could not connect to the configured endpoint${suffix}.`);
   }
+}
+
+async function checkResponse(response: Response): Promise<Response> {
   if (response.ok) {
     return response;
   }

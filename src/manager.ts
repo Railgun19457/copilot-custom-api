@@ -8,6 +8,7 @@ import { loadMetadata, resolveDefaults } from './model-metadata';
 import { CustomApiProvider, secretName, settingsKey, vendor } from './provider';
 import { Settings } from './settings';
 import { channelSelectionId, groupChannels, utilityKeys } from './routing';
+import { UsagePeriod, UsageStore, usagePeriods } from './usage';
 
 type UtilityOption = { id: string; name: string; modelId: string; provider?: string; sources?: number };
 
@@ -25,12 +26,18 @@ export class ProviderManager implements vscode.Disposable {
   private ready = false;
   private busy = false;
   private revision = 0;
+  private usageRevision = 0;
+  private usagePeriod?: UsagePeriod;
+  private usageRefresh?: ReturnType<typeof setTimeout>;
+  private showUsage = false;
   private readonly chinese: Record<string, string>;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly settings: Settings,
     private readonly provider: CustomApiProvider,
+    private readonly usage: UsageStore,
+    onUsageChange: vscode.Event<void>,
   ) {
     this.chinese = JSON.parse(readFileSync(vscode.Uri.joinPath(extensionUri, 'media', 'zh-cn.json').fsPath, 'utf8'));
     this.disposables = [
@@ -56,6 +63,15 @@ export class ProviderManager implements vscode.Disposable {
       vscode.commands.registerCommand(openProvider, (id: unknown) => this.open(string(id))),
       vscode.commands.registerCommand('copilotCustomApi.openManager', () => this.open()),
       vscode.commands.registerCommand('copilotCustomApi.newProvider', () => this.open('')),
+      vscode.commands.registerCommand('copilotCustomApi.openUsage', () => this.open(undefined, true)),
+      onUsageChange(() => {
+        if (this.panel?.visible && this.usagePeriod && !this.usageRefresh) {
+          this.usageRefresh = setTimeout(() => {
+            this.usageRefresh = undefined;
+            this.refreshUsage();
+          }, 350);
+        }
+      }),
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration(settingsKey)) {
           this.tree.fire();
@@ -74,19 +90,28 @@ export class ProviderManager implements vscode.Disposable {
     this.disposables.forEach(item => item.dispose());
   }
 
-  open(selection?: string): void {
+  open(selection?: string, showUsage = false): void {
     if (this.panel) {
       this.panel.reveal();
-      if (selection !== undefined) {
+      if (showUsage) {
+        if (this.ready) {
+          void this.panel.webview.postMessage({ type: 'openUsage' });
+        } else {
+          this.showUsage = true;
+          this.selection = undefined;
+        }
+      } else if (selection !== undefined) {
         if (this.ready) {
           void this.panel.webview.postMessage({ type: 'select', id: selection });
         } else {
           this.selection = selection;
+          this.showUsage = false;
         }
       }
       return;
     }
     this.selection = selection;
+    this.showUsage = showUsage;
     this.ready = false;
     this.connections.clear();
     const media = vscode.Uri.joinPath(this.extensionUri, 'media');
@@ -97,8 +122,16 @@ export class ProviderManager implements vscode.Disposable {
     });
     this.panel = panel;
     const receiver = panel.webview.onDidReceiveMessage(message => void this.receive(panel, message));
+    panel.onDidChangeViewState(() => {
+      if (panel.visible) {
+        this.refreshUsage();
+      }
+    });
     panel.onDidDispose(() => {
       receiver.dispose();
+      clearTimeout(this.usageRefresh);
+      this.usageRefresh = undefined;
+      this.usagePeriod = undefined;
       this.panel = undefined;
       this.ready = false;
     });
@@ -106,6 +139,21 @@ export class ProviderManager implements vscode.Disposable {
     panel.webview.html = template
       .replaceAll('{{csp}}', panel.webview.cspSource)
       .replaceAll('{{assets}}', panel.webview.asWebviewUri(media).toString());
+  }
+
+  private refreshUsage(): void {
+    const panel = this.panel;
+    const period = this.usagePeriod;
+    if (!panel || !period) {
+      return;
+    }
+    const revision = ++this.usageRevision;
+    const publish = (data: object) => {
+      if (this.panel === panel && this.usagePeriod === period && revision === this.usageRevision) {
+        void panel.webview.postMessage({ type: 'usage', period, ...data });
+      }
+    };
+    void this.usage.read(period).then(publish, () => publish({ error: true }));
   }
 
   private refresh(): void {
@@ -134,9 +182,11 @@ export class ProviderManager implements vscode.Disposable {
     }
     this.connections = new Map(connections);
     const selection = this.selection;
+    const showUsage = this.showUsage;
     this.selection = undefined;
+    this.showUsage = false;
     await panel.webview.postMessage({
-      type: 'state', entries, protocols, selection, chinese: this.chinese, language: vscode.env.language,
+      type: 'state', entries, protocols, selection, showUsage, chinese: this.chinese, language: vscode.env.language,
       routingEnabled, utility: this.settings.utilityModels(), vendor,
       utilityOptions: this.utilityOptions(configured, routingEnabled),
       preference: vscode.workspace.getConfiguration().get(languageKey, 'auto'),
@@ -146,6 +196,15 @@ export class ProviderManager implements vscode.Disposable {
   private async receive(panel: vscode.WebviewPanel, value: unknown): Promise<void> {
     const message = object(value);
     const type = string(message.type);
+    if (type === 'readUsage') {
+      this.usagePeriod = usagePeriods.find(period => period === message.period);
+      this.refreshUsage();
+      return;
+    }
+    if (type === 'closeUsage') {
+      this.usagePeriod = undefined;
+      return;
+    }
     if (type === 'metadata') {
       const id = string(message.model).trim();
       try {

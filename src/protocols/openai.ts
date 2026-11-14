@@ -1,5 +1,15 @@
 import { JsonObject, object, string } from '../config';
-import { Adapter, checkStreamError, imageUrl, records, Request, schema, textParts, ToolCall, toolCall } from './types';
+import { Adapter, checkStreamError, imageUrl, records, Request, schema, textParts, TokenUsage, tokenUsage, ToolCall, toolCall } from './types';
+
+function openAIUsage(value: unknown, input: 'prompt' | 'input', output: 'completion' | 'output'): TokenUsage | undefined {
+  const usage = object(value);
+  const inputDetails = object(usage[`${input}_tokens_details`]);
+  return tokenUsage(usage[`${input}_tokens`], usage[`${output}_tokens`], usage.total_tokens, {
+    cached: inputDetails.cached_tokens ?? usage.prompt_cache_hit_tokens,
+    cacheWrite: inputDetails.cache_write_tokens,
+    reasoning: object(usage[`${output}_tokens_details`]).reasoning_tokens,
+  });
+}
 
 function chatMessages(request: Request): JsonObject[] {
   const result: JsonObject[] = [];
@@ -54,6 +64,7 @@ export const chatCompletions: Adapter = {
       ? 'max_completion_tokens' : 'max_tokens';
     return {
       [limit]: model.maxOutputTokens,
+      ...(model.streaming ? { stream_options: { include_usage: true } } : {}),
       ...options,
       ...(request.maxOutputTokens !== undefined ? {
         max_tokens: limit === 'max_tokens' ? request.maxOutputTokens : undefined,
@@ -77,12 +88,14 @@ export const chatCompletions: Adapter = {
     let content = '';
     let reasoning = '';
     let finished = false;
+    let usage: TokenUsage | undefined;
     for await (const event of events) {
       checkStreamError(event);
       if (event.name === '[DONE]') {
         finished = true;
         break;
       }
+      usage = openAIUsage(event.data.usage, 'prompt', 'completion') ?? usage;
       const choices = records(event.data.choices);
       const choice = choices.find(item => item.index === 0) ?? choices[0];
       if (!choice) {
@@ -116,8 +129,9 @@ export const chatCompletions: Adapter = {
     const calls = [...pending.entries()].sort(([a], [b]) => a - b)
       .map(([, call]) => toolCall(call.id, call.name, call.args));
     calls.forEach(report);
-    if (reasoning && calls.length) {
-      return {
+    return {
+      usage,
+      native: reasoning && calls.length ? {
         items: [{
           role: 'assistant',
           content: content || null,
@@ -129,9 +143,8 @@ export const chatCompletions: Adapter = {
           })),
         }],
         callIds: calls.map(call => call.id),
-      };
-    }
-    return undefined;
+      } : undefined,
+    };
   },
 };
 
@@ -210,6 +223,7 @@ export const responses: Adapter = {
     let output: JsonObject[] = [];
     let streamedText = false;
     let finished = false;
+    let usage: TokenUsage | undefined;
     for await (const event of events) {
       checkStreamError(event);
       const { data } = event;
@@ -238,6 +252,7 @@ export const responses: Adapter = {
           throw new Error('The Responses endpoint failed to complete generation.');
         }
         output = records(response.output);
+        usage = openAIUsage(response.usage, 'input', 'output');
         finished = true;
       }
       if (finished || event.name === '[DONE]') {
@@ -272,6 +287,6 @@ export const responses: Adapter = {
       }
     }
     calls.forEach(report);
-    return items.length ? { items, callIds: calls.map(call => call.id) } : undefined;
+    return { usage, native: items.length ? { items, callIds: calls.map(call => call.id) } : undefined };
   },
 };

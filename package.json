@@ -2,7 +2,7 @@
   "name": "copilot-custom-api",
   "displayName": "Copilot Custom API",
   "description": "Connect your own model API endpoints to GitHub Copilot Chat.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "Railgun19457",
   "icon": "media/icon.png",
   "engines": {
@@ -42,6 +42,12 @@
         "title": "%command.newProvider%",
         "category": "Copilot Custom API",
         "icon": "$(add)"
+      },
+      {
+        "command": "copilotCustomApi.openUsage",
+        "title": "%command.openUsage%",
+        "category": "Copilot Custom API",
+        "icon": "$(graph)"
       },
       {
         "command": "copilotCustomApi.openProvider",
@@ -87,6 +93,11 @@
           "command": "copilotCustomApi.newProvider",
           "when": "view == copilotCustomApi.providers",
           "group": "navigation@2"
+        },
+        {
+          "command": "copilotCustomApi.openUsage",
+          "when": "view == copilotCustomApi.providers",
+          "group": "navigation@3"
         }
       ],
       "commandPalette": [

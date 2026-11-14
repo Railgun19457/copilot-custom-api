@@ -1,5 +1,6 @@
 {
   "command.openManager": "打开供应商管理器",
+  "command.openUsage": "打开使用统计",
   "command.newProvider": "新建供应商",
   "command.openProvider": "打开供应商",
   "command.manageWizard": "管理供应商（分步向导）",

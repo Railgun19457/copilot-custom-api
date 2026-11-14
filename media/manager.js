@@ -25,7 +25,8 @@ const checked = new Set();
 const metadataRequests = new Map();
 let metadataSequence = 0;
 let providerKeyOrigin;
-let modelSettingsOpen = false;
+let page = 'provider';
+let usageData;
 let vendor = '';
 let utilityBaseline;
 let routingBaseline;
@@ -36,6 +37,7 @@ const dynamicContent = [
   '#provider-list', '#status', '#provider-title', '#provider-meta', '#provider-origin', '#key-status',
   '#catalog-results', '#catalog-count', '#catalog-status', '#confirm-title', '#confirm-body', '#confirm-action',
   '#add-selected', '#protocol', '#utility-model', '#utility-small-model', '#utility-status', '#routing-status',
+  '#usage-provider', '#usage-model', '#usage-status', '#usage-chart', '#usage-chart-detail', '#usage-breakdown',
   '[data-title]', '[data-subtitle]', '[data-capabilities]', '[data-metadata-status]', '[data-field="reasoningEffort"]',
 ].join(', ');
 
@@ -118,7 +120,7 @@ function renderNavigation() {
     const button = document.createElement('button');
     button.type = 'button';
     button.disabled = busy;
-    if (!modelSettingsOpen && entry.id === current?.id) {
+    if (page === 'provider' && entry.id === current?.id) {
       button.setAttribute('aria-current', 'true');
     }
     const name = document.createElement('span');
@@ -144,7 +146,9 @@ function syncControls() {
   $('external-change').hidden = !external;
   $('new-provider').disabled = !ready || busy;
   $('open-model-settings').disabled = !ready || busy;
-  $('open-model-settings').setAttribute('aria-current', String(modelSettingsOpen));
+  $('open-model-settings').setAttribute('aria-current', String(page === 'settings'));
+  $('open-usage').disabled = !ready || busy;
+  $('open-usage').setAttribute('aria-current', String(page === 'usage'));
   $('utility-fields').disabled = busy;
   $('routing-fields').disabled = busy;
   $('save-utility').disabled = busy || utilityBaseline === JSON.stringify(utilityValues());
@@ -450,8 +454,7 @@ function updateModelSummary(row) {
 function load(entry, keepNotice = false) {
   current = entry && { ...entry, baseline: entry.id ? JSON.stringify(entry.config) : '' };
   dirty = Boolean(entry && !entry.id);
-  editor.hidden = modelSettingsOpen || !entry;
-  $('empty').hidden = modelSettingsOpen || Boolean(entry);
+  syncPage();
   if (!keepNotice) {
     notice();
   }
@@ -483,7 +486,7 @@ function load(entry, keepNotice = false) {
 }
 
 async function select(id) {
-  if (busy || (!modelSettingsOpen && id && id === current?.id)) {
+  if (busy || (page === 'provider' && id && id === current?.id)) {
     return;
   }
   if (dirty && !await confirmAction('Discard changes?', t('Your changes to this provider have not been saved.'), 'Discard')) {
@@ -491,8 +494,10 @@ async function select(id) {
   }
   const entry = id ? entries.find(item => item.id === id) : { id: '', config: {} };
   if (entry) {
-    modelSettingsOpen = false;
-    $('model-settings').hidden = true;
+    if (page === 'usage') {
+      vscode.postMessage({ type: 'closeUsage' });
+    }
+    page = 'provider';
     showTab('connection');
     load(entry);
     fields.name.focus();
@@ -580,13 +585,32 @@ function receiveModelSettings(data) {
   routingBaseline = data.routingEnabled;
 }
 
-async function openModelSettings() {
-  if (dirty && !await confirmAction('Discard changes?', t('Your changes to this provider have not been saved.'), 'Discard')) {
+function syncPage() {
+  editor.hidden = page !== 'provider' || !current;
+  $('empty').hidden = page !== 'provider' || Boolean(current);
+  $('model-settings').hidden = page !== 'settings';
+  $('usage-page').hidden = page !== 'usage';
+}
+
+async function openPage(destination) {
+  if (busy || page === destination || (dirty &&
+      !await confirmAction('Discard changes?', t('Your changes to this provider have not been saved.'), 'Discard'))) {
     return;
   }
-  modelSettingsOpen = true;
-  load(entries.find(entry => entry.id === current?.id) ?? entries[0]);
-  $('model-settings').hidden = false;
+  if (page === 'usage') {
+    vscode.postMessage({ type: 'closeUsage' });
+  }
+  page = destination;
+  if (dirty) {
+    load(entries.find(entry => entry.id === current?.id) ?? entries[0]);
+  } else {
+    syncPage();
+    renderNavigation();
+    syncControls();
+  }
+  if (page === 'usage') {
+    readUsage();
+  }
 }
 
 function saveModelSettings(type, baseline, values, status) {
@@ -598,6 +622,178 @@ function saveModelSettings(type, baseline, values, status) {
   notice('Saving changes…', '', status);
   syncControls();
   vscode.postMessage({ type, baseline, values });
+}
+
+function readUsage() {
+  const period = Number($('usage-period').value);
+  if (!usageData || usageData.period !== period || usageData.error) {
+    usageData = undefined;
+    renderUsage();
+  }
+  vscode.postMessage({ type: 'readUsage', period });
+}
+
+function usageOptions(field, rows, id, label, all) {
+  const previous = field.value;
+  const choices = new Map(rows.map(row => [row[id], row[label]]));
+  field.replaceChildren(new Option(t(all), ''), ...[...choices]
+    .sort((a, b) => a[1].localeCompare(b[1], document.documentElement.lang))
+    .map(([value, name]) => new Option(name, value)));
+  field.value = choices.has(previous) ? previous : '';
+}
+
+function addUsage(target, row) {
+  for (const field of ['requests', 'failed', 'legacyRequests', 'firstTextMs', 'firstTextSamples',
+    'nonStreamMs', 'nonStreamSamples', 'tpsTokens', 'tpsMs',
+    'reported', 'input', 'output', 'total', 'cached', 'cacheInput', 'reasoning', 'cachedReported', 'reasoningReported']) {
+    target[field] = (target[field] ?? 0) + row[field];
+  }
+}
+
+function renderUsage() {
+  const provider = $('usage-provider');
+  const model = $('usage-model');
+  const available = usageData?.rows ?? [];
+  if (usageData && !usageData.error) {
+    usageOptions(provider, available, 'providerId', 'provider', 'All providers');
+    usageOptions(model, available.filter(row => !provider.value || row.providerId === provider.value), 'modelId', 'model', 'All models');
+  }
+  provider.disabled = model.disabled = !available.length;
+  notice(!usageData ? 'Loading usage…' : usageData.error ? 'Could not load usage statistics.'
+    : usageData.writeFailed ? 'Some usage records could not be saved.' : '',
+    usageData?.error || usageData?.writeFailed ? 'error' : '', $('usage-status'));
+  const rows = available.filter(row => (!provider.value || row.providerId === provider.value) &&
+    (!model.value || row.modelId === model.value));
+  $('usage-empty').hidden = !usageData || usageData.error || Boolean(rows.length);
+  $('usage-results').hidden = !rows.length;
+  if (!rows.length) {
+    return;
+  }
+  const totals = {};
+  const grouped = new Map();
+  const daily = new Map(usageData.days.map(day => [day, { day, input: 0, output: 0, requests: 0, reported: 0 }]));
+  for (const row of rows) {
+    addUsage(totals, row);
+    const day = daily.get(row.day);
+    day.input += row.input;
+    day.output += row.output;
+    day.requests += row.requests;
+    day.reported += row.reported;
+    const key = JSON.stringify([row.providerId, row.modelId]);
+    const group = grouped.get(key) ?? { modelId: row.modelId };
+    group.provider = row.provider;
+    group.model = row.model;
+    addUsage(group, row);
+    grouped.set(key, group);
+  }
+  const language = document.documentElement.lang;
+  const format = new Intl.NumberFormat(language);
+  const decimal = new Intl.NumberFormat(language, { maximumFractionDigits: 1 });
+  const percent = new Intl.NumberFormat(language, { style: 'percent', maximumFractionDigits: 2 });
+  const seconds = new Intl.NumberFormat(language, { style: 'unit', unit: 'second', maximumFractionDigits: 3 });
+  const values = row => {
+    const measured = row.requests - row.legacyRequests;
+    return {
+      provider: row.provider,
+      model: row.model,
+      requests: format.format(row.requests),
+      failed: measured ? format.format(row.failed) : '—',
+      'success-rate': measured ? percent.format((measured - row.failed) / measured) : '—',
+      'cache-rate': row.cacheInput ? percent.format(row.cached / row.cacheInput) : '—',
+      'first-text': row.firstTextSamples ? seconds.format(row.firstTextMs / row.firstTextSamples / 1000) : '—',
+      'non-stream': row.nonStreamSamples ? seconds.format(row.nonStreamMs / row.nonStreamSamples / 1000) : '—',
+      tps: row.tpsMs ? decimal.format(row.tpsTokens * 1000 / row.tpsMs) : '—',
+      input: row.reported ? format.format(row.input) : '—',
+      output: row.reported ? format.format(row.output) : '—',
+      total: row.reported ? format.format(row.total) : '—',
+      cached: row.cachedReported ? format.format(row.cached) : '—',
+      reasoning: row.reasoningReported ? format.format(row.reasoning) : '—',
+    };
+  };
+  const summary = values(totals);
+  for (const name of ['total', 'input', 'output', 'cache-rate', 'requests', 'failed', 'success-rate', 'first-text', 'non-stream']) {
+    $(`usage-${name}`).textContent = summary[name];
+  }
+  $('usage-succeeded').textContent = t('{0} successful', format.format(totals.requests - totals.failed));
+  $('usage-breakdown').replaceChildren(...[...grouped.values()].sort((a, b) => b.requests - a.requests || b.total - a.total)
+    .map(row => {
+      const tr = document.createElement('tr');
+      const display = values(row);
+      const notes = {
+        model: row.modelId !== row.model ? row.modelId : undefined,
+        requests: row.failed ? t('{0} failed', display.failed) : undefined,
+        cached: row.cacheInput ? display['cache-rate'] : undefined,
+      };
+      for (const key of ['provider', 'model', 'requests', 'success-rate', 'first-text', 'non-stream', 'tps', 'input', 'output', 'cached', 'reasoning', 'total']) {
+        const cell = tr.insertCell();
+        cell.textContent = display[key];
+        if (notes[key]) {
+          const note = document.createElement('small');
+          note.textContent = notes[key];
+          cell.append(note);
+        }
+      }
+      return tr;
+    }));
+  renderUsageChart([...daily.values()], format);
+}
+
+function renderUsageChart(days, format) {
+  const chart = $('usage-chart');
+  const caption = $('usage-chart-detail');
+  const previous = chart.querySelector('[tabindex="0"]')?.dataset.day;
+  const focused = chart.contains(document.activeElement);
+  const date = new Intl.DateTimeFormat(document.documentElement.lang, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const peak = Math.max(1, ...days.map(row => row.input + row.output));
+  const interval = Math.ceil(days.length / 7);
+  const bars = days.map((row, index) => {
+    const label = date.format(new Date(`${row.day}T00:00:00Z`));
+    const detail = row.requests && !row.reported ? t('{0} · Token counts unavailable', label)
+      : t('{0} · {1} input / {2} output', label, format.format(row.input), format.format(row.output));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'usage-bar';
+    button.dataset.day = row.day;
+    button.setAttribute('aria-label', detail);
+    button.tabIndex = -1;
+    const column = document.createElement('span');
+    column.className = 'usage-bar-column';
+    for (const series of ['output', 'input']) {
+      const segment = document.createElement('span');
+      segment.className = `usage-bar-${series}`;
+      segment.style.height = `${row[series] / peak * 100}%`;
+      column.append(segment);
+    }
+    button.append(column);
+    if (index === 0 || index === days.length - 1 ||
+        (index % interval === 0 && days.length - 1 - index >= interval)) {
+      const tick = document.createElement('span');
+      tick.className = 'usage-date';
+      tick.textContent = label;
+      button.append(tick);
+    }
+    button.addEventListener('pointerenter', () => { caption.textContent = detail; });
+    button.addEventListener('focus', () => {
+      chart.querySelector('[tabindex="0"]')?.setAttribute('tabindex', '-1');
+      button.tabIndex = 0;
+      caption.textContent = detail;
+    });
+    button.addEventListener('keydown', event => {
+      const offset = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+      if (offset) {
+        event.preventDefault();
+        bars[index + offset]?.focus();
+      }
+    });
+    return button;
+  });
+  const currentBar = bars.find(bar => bar.dataset.day === previous) ?? bars.at(-1);
+  currentBar.tabIndex = 0;
+  caption.textContent = currentBar.getAttribute('aria-label');
+  chart.replaceChildren(...bars);
+  if (focused) {
+    currentBar.focus();
+  }
 }
 
 function renderCatalog() {
@@ -668,7 +864,12 @@ editor.addEventListener('submit', event => {
 });
 $('new-provider').addEventListener('click', () => void select(''));
 $('first-provider').addEventListener('click', () => void select(''));
-$('open-model-settings').addEventListener('click', () => { if (!modelSettingsOpen) void openModelSettings(); });
+$('open-model-settings').addEventListener('click', () => void openPage('settings'));
+$('open-usage').addEventListener('click', () => void openPage('usage'));
+$('usage-period').addEventListener('change', readUsage);
+$('refresh-usage').addEventListener('click', readUsage);
+$('usage-provider').addEventListener('change', renderUsage);
+$('usage-model').addEventListener('change', renderUsage);
 for (const [kind, baseline, values] of [
   ['utility', () => utilityBaseline, utilityValues], ['routing', () => routingBaseline, routingValues],
 ]) {
@@ -753,6 +954,9 @@ window.addEventListener('message', ({ data }) => {
         renderCatalog();
       }
       updateTitle();
+      if (page === 'usage') {
+        renderUsage();
+      }
     }
     if (!ready) {
       fields.protocol.replaceChildren(...Object.entries(protocols).map(([value, name]) => new Option(name, value)));
@@ -783,6 +987,9 @@ window.addEventListener('message', ({ data }) => {
       renderNavigation();
       syncControls();
     }
+    if (data.showUsage) {
+      void openPage('usage');
+    }
   } else if (data.type === 'loadError') {
     if (!ready) {
       $('loading').textContent = translateMessage(data.status);
@@ -791,6 +998,15 @@ window.addEventListener('message', ({ data }) => {
     }
   } else if (data.type === 'select') {
     void select(data.id);
+  } else if (data.type === 'openUsage') {
+    if (page === 'usage') {
+      readUsage();
+    } else {
+      void openPage('usage');
+    }
+  } else if (data.type === 'usage' && page === 'usage' && data.period === Number($('usage-period').value)) {
+    usageData = data;
+    renderUsage();
   } else if (data.type === 'done' || data.type === 'error') {
     busy = false;
     if (data.type === 'done' && data.action === 'save') {

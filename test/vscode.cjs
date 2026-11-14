@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
 const vscode = require('vscode');
 const { name, publisher } = require('../package.json');
-const { answer, apiKey, args, png, protocolPaths, toolName } = require('./fixture.cjs');
-const { createAuthenticatedModel, editProviderInManager } = require('./quick-input.cjs');
+const { answer, apiKey, args, expectedUsage, png, protocolPaths, toolName } = require('./fixture.cjs');
+const { createAuthenticatedModel, editProviderInManager, verifyUsageInManager } = require('./quick-input.cjs');
 const { routedModelId } = require('../out/routing');
 
 const vendor = 'copilot-custom-api';
@@ -95,6 +95,12 @@ async function run() {
     assert.ok(call, `${protocol} returned a tool call`);
     assert.equal(call.name, toolName);
     assert.deepEqual(call.input, args);
+    function checkUsage(parts) {
+      const recorded = parts.filter(part => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+      assert.equal(recorded.length, 1, `${protocol} should report usage once`);
+      assert.deepEqual(JSON.parse(Buffer.from(recorded[0].data).toString('utf8')), expectedUsage(protocol));
+    }
+    checkUsage(first);
     const result = vscode.LanguageModelChatMessage.User([
       new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart('tool-output')]),
     ]);
@@ -102,8 +108,10 @@ async function run() {
     assert.equal(await chat(model, [input, vscode.LanguageModelChatMessage.Assistant([call]), result], { tools }), answer);
     const plain = models.find(item => item.name === `Plain ${protocol}`);
     assert.ok(plain, `Missing the JSON model for ${protocol}`);
-    assert.equal(await chat(plain, [vscode.LanguageModelChatMessage.User('Nonstreaming test')]), answer);
-    console.log(`[Copilot Custom API test] ${protocol} sent an image, round-tripped a tool call and handled JSON.`);
+    const jsonParts = await read(await plain.sendRequest([vscode.LanguageModelChatMessage.User('Nonstreaming test')]));
+    assert.equal(jsonParts.filter(part => part instanceof vscode.LanguageModelTextPart).map(part => part.value).join(''), answer);
+    checkUsage(jsonParts);
+    console.log(`[Copilot Custom API test] ${protocol} sent an image, round-tripped a tool call and reported streaming and JSON usage.`);
   }
 
   const sessionModel = models.find(model => model.name === 'Plain chat-completions');
@@ -183,6 +191,11 @@ async function run() {
   assert.equal(await request('fail twice', 'session-3'), answer);
   assert.equal(await request('fallback in another session', 'session-4'), answer);
   console.log('[Copilot Custom API test] Same-ID channels prefer the highest priority and fail over across sessions.');
+  const authProviderId = authId.slice(0, -'/sample'.length);
+  await verifyUsageInManager(vscode, process.env.CUSTOM_API_TEST_CDP_PORT, authProviderId, async prompt => {
+    assert.equal(await chat(routed, [vscode.LanguageModelChatMessage.User(prompt)]), answer);
+  });
+  console.log('[Copilot Custom API test] Usage statistics show actual channel totals, filters, and live updates.');
 }
 
 exports.run = async () => {

@@ -90,7 +90,7 @@ async function workbench(port) {
         });
       }, 'the Provider Manager webview');
       const { sessionId } = await send('Target.attachToTarget', { targetId: getManager.targetId, flatten: true });
-      return async (fn, ...args) => {
+      const inspect = async (fn, ...args) => {
         const response = await send('Runtime.evaluate', {
           expression: `(${fn})(...${JSON.stringify(args)})`, returnByValue: true,
         }, sessionId);
@@ -99,6 +99,12 @@ async function workbench(port) {
         }
         return response.result.value;
       };
+      return (fn, description, ...args) => eventually(() => inspect(
+        `() => {
+          const doc = document.getElementById('editor') ? document : document.querySelector('iframe')?.contentDocument;
+          return doc && (${fn})(doc, ...${JSON.stringify(args)});
+        }`,
+      ), description);
     },
     async fill(title, value) {
       await visiblePrompt(title);
@@ -170,13 +176,7 @@ async function editProviderInManager(vscode, port, utilityModelId) {
   try {
     await vscode.commands.executeCommand('copilotCustomApi.providers.focus');
     await vscode.commands.executeCommand('copilotCustomApi.openManager');
-    const inspect = await ui.manager();
-    const act = (script, description, ...args) => eventually(() => inspect(
-      `() => {
-        const doc = document.getElementById('editor') ? document : document.querySelector('iframe')?.contentDocument;
-        return doc && (${script})(doc, ...${JSON.stringify(args)});
-      }`,
-    ), description);
+    const act = await ui.manager();
     await act(doc => {
       const button = [...doc.querySelectorAll('#provider-list button')].find(item => item.textContent.includes('Authenticated fixture'));
       if (!button) {
@@ -198,6 +198,10 @@ async function editProviderInManager(vscode, port, utilityModelId) {
     }, 'the Fetch models action');
     await act(doc => {
       if (doc.getElementById('catalog-count').textContent !== '2 returned') {
+        const status = doc.getElementById('catalog-status');
+        if (status.classList.contains('error')) {
+          throw new Error(status.textContent);
+        }
         return false;
       }
       doc.getElementById('close-catalog').click();
@@ -320,4 +324,83 @@ async function editProviderInManager(vscode, port, utilityModelId) {
   }
 }
 
-module.exports = { createAuthenticatedModel, editProviderInManager };
+async function verifyUsageInManager(vscode, port, authProviderId, request) {
+  const ui = await workbench(port);
+  try {
+    await vscode.commands.executeCommand('copilotCustomApi.openUsage');
+    const act = await ui.manager();
+    await act(doc => {
+      const period = doc.getElementById('usage-period');
+      if (doc.getElementById('usage-page').hidden || doc.getElementById('usage-results').hidden) {
+        return false;
+      }
+      if (doc.getElementById('usage-title').textContent !== '使用统计' || period.value !== '7' ||
+        doc.getElementById('usage-success-rate').previousElementSibling.textContent !== '成功率' ||
+        doc.getElementById('usage-cache-rate').previousElementSibling.textContent !== '缓存命中率') {
+        throw new Error('Usage statistics should open in Chinese with the seven-day range selected.');
+      }
+      period.value = '1';
+      period.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }, 'the Usage statistics command and date filter');
+    await act((doc, primary) => {
+      if (doc.querySelectorAll('#usage-chart button').length !== 1) {
+        return false;
+      }
+      const select = (id, value) => {
+        const field = doc.getElementById(id);
+        field.value = value;
+        if (field.value !== value) {
+          throw new Error(`Usage filter is missing ${value}.`);
+        }
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      if ([...doc.getElementById('usage-provider').options].some(option => option.value === 'extra')) {
+        throw new Error('Canceled calls should be excluded from usage.');
+      }
+      select('usage-provider', primary);
+      select('usage-model', 'sample');
+      const value = name => doc.getElementById(`usage-${name}`).textContent;
+      if (value('failed') !== '3' || value('requests') !== '9' || value('success-rate') !== '66.67%') {
+        throw new Error(`Expected 3 failures and 6 successes on the primary channel, got ${value('failed')} of ${value('requests')}.`);
+      }
+      select('usage-provider', 'chat-completions');
+      select('usage-model', 'plain');
+      const tps = doc.querySelector('#usage-breakdown tr').cells[6].textContent;
+      if (value('first-text') !== '—' || value('non-stream') === '—' || !(Number(tps.replaceAll(',', '')) > 0)) {
+        throw new Error('JSON responses should report full response time and non-streaming output TPS.');
+      }
+      select('usage-model', 'sample');
+      const rows = [...doc.querySelectorAll('#usage-breakdown tr')];
+      if (rows.length !== 1 || value('requests') !== '4' || value('failed') !== '0' || value('total') !== '2,200' ||
+        value('success-rate') !== '100%' || value('cache-rate') !== '19.05%' || rows[0].cells[9].querySelector('small')?.textContent !== '19.05%') {
+        throw new Error('The fallback channel should include both successful failover requests and its own cache rate.');
+      }
+      if (value('first-text') === '—' || value('non-stream') !== '—') {
+        throw new Error('Streamed text should report first text latency.');
+      }
+      if (!doc.querySelector('.usage-bar-input').getBoundingClientRect().height) {
+        throw new Error('The daily chart should plot the recorded input tokens.');
+      }
+      return true;
+    }, 'daily usage for the primary and fallback channels', authProviderId);
+    await request('Usage without token counts');
+    await act(doc => doc.getElementById('usage-succeeded').textContent === '成功 5 次' &&
+      doc.getElementById('usage-requests').textContent === '5' &&
+      doc.getElementById('usage-total').textContent === '2,200', 'live usage refresh that counts a response without token data');
+    await request('Usage without cache counts');
+    await act(doc => doc.getElementById('usage-requests').textContent === '6' &&
+      doc.getElementById('usage-total').textContent === '2,750' &&
+      doc.getElementById('usage-cache-rate').textContent === '19.05%' &&
+      Number(doc.querySelector('#usage-breakdown tr').cells[6].textContent.replaceAll(',', '')) > 0, 'measured streaming TPS and cache rate');
+    await request('Usage JSON fallback');
+    await act(doc => doc.getElementById('usage-requests').textContent === '7' &&
+      doc.getElementById('usage-first-text').textContent !== '—' && doc.getElementById('usage-non-stream').textContent !== '—' &&
+      Number(doc.querySelector('#usage-breakdown tr').cells[6].textContent.replaceAll(',', '')) > 0,
+    'a single model TPS when the same endpoint returns both SSE and JSON');
+  } finally {
+    ui.close();
+  }
+}
+
+module.exports = { createAuthenticatedModel, editProviderInManager, verifyUsageInManager };

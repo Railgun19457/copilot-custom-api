@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const { setTimeout: wait } = require('node:timers/promises');
 
 const protocolPaths = {
   'chat-completions': '/v1/chat/completions',
@@ -15,6 +16,32 @@ const args = { filename: '例子.txt' };
 const callId = 'provider-call';
 const answer = '模拟回复';
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGMQKDgARwzEcQD9QxQBa3LPDgAAAABJRU5ErkJggg==';
+const usage = {
+  prompt_tokens: 420,
+  completion_tokens: 130,
+  total_tokens: 550,
+  prompt_tokens_details: { cached_tokens: 80, cache_creation_input_tokens: 20 },
+  completion_tokens_details: { reasoning_tokens: 30 },
+};
+const responseUsage = {
+  input_tokens: 420, output_tokens: 130, total_tokens: 550,
+  input_tokens_details: { cached_tokens: 80, cache_write_tokens: 20 },
+  output_tokens_details: { reasoning_tokens: 30 },
+};
+const messageUsage = {
+  input_tokens: 320, output_tokens: 130, cache_read_input_tokens: 80, cache_creation_input_tokens: 20,
+  output_tokens_details: { thinking_tokens: 30 },
+};
+const generateUsage = {
+  promptTokenCount: 400, toolUsePromptTokenCount: 20, cachedContentTokenCount: 80,
+  candidatesTokenCount: 100, thoughtsTokenCount: 30, totalTokenCount: 550,
+};
+const interactionUsage = {
+  total_input_tokens: 400, total_tool_use_tokens: 20, total_cached_tokens: 80,
+  total_output_tokens: 100, total_thought_tokens: 30, total_tokens: 550,
+};
+const expectedUsage = protocol => protocol.startsWith('gemini-')
+  ? { ...usage, prompt_tokens_details: { cached_tokens: 80 } } : usage;
 
 function mockReply(protocol, body) {
   const input = body.messages ?? body.input ?? body.contents;
@@ -90,16 +117,41 @@ function mockReply(protocol, body) {
       { candidates: [{ finishReason: 'STOP' }] },
     ] : [{ candidates: [{ content: { parts: [{ text: answer }] }, finishReason: 'STOP' }] }],
   };
-  return data[protocol]();
+  const events = data[protocol]();
+  const last = events.at(-1);
+  if (protocol === 'chat-completions') {
+    if (body.stream_options?.include_usage) {
+      events.splice(-1, 0, { choices: [], usage: {
+        ...usage, prompt_tokens_details: { cached_tokens: 80, cache_write_tokens: 20 },
+      } });
+    }
+  } else if (protocol === 'responses') {
+    last.response.usage = responseUsage;
+  } else if (protocol === 'messages') {
+    events.unshift({ type: 'message_start', message: { usage: { input_tokens: 320, output_tokens: 1, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 } } });
+    events.splice(-1, 0,
+      { type: 'message_delta', usage: { output_tokens: 50 } },
+      { type: 'message_delta', usage: { input_tokens: null, output_tokens: 130, output_tokens_details: { thinking_tokens: 30 } } },
+    );
+  } else if (protocol === 'gemini-generate-content') {
+    events.unshift({ usageMetadata: { promptTokenCount: 400, cachedContentTokenCount: 80 } });
+    events.push({ usageMetadata: generateUsage });
+  } else {
+    last.interaction.usage = interactionUsage;
+  }
+  return events;
 }
 
 function nonStreamingReply(protocol) {
   return {
-    'chat-completions': { choices: [{ message: { content: answer }, finish_reason: 'stop' }] },
-    responses: { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: answer }] }] },
-    messages: { content: [{ type: 'text', text: answer }] },
-    'gemini-interactions': { status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: answer }] }] },
-    'gemini-generate-content': { candidates: [{ content: { parts: [{ text: answer }] }, finishReason: 'STOP' }] },
+    'chat-completions': {
+      choices: [{ message: { content: answer }, finish_reason: 'stop' }],
+      usage: { ...usage, prompt_cache_hit_tokens: 80, prompt_tokens_details: { cache_write_tokens: 20 } },
+    },
+    responses: { status: 'completed', usage: responseUsage, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: answer }] }] },
+    messages: { usage: messageUsage, content: [{ type: 'text', text: answer }] },
+    'gemini-interactions': { status: 'completed', usage: interactionUsage, steps: [{ type: 'model_output', content: [{ type: 'text', text: answer }] }] },
+    'gemini-generate-content': { usageMetadata: generateUsage, candidates: [{ content: { parts: [{ text: answer }] }, finishReason: 'STOP' }] },
   }[protocol];
 }
 
@@ -122,7 +174,7 @@ async function fixtureServer() {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'sample' }, { id: 'other' }] }));
       return;
     }
-    const path = url.pathname.replace(/^\/auth/, '');
+    const path = url.pathname.replace(/^\/(?:auth|legacy)/, '');
     const protocol = Object.keys(protocolPaths).find(key => protocolPaths[key] === path
       .replace(/:generateContent$/, ':streamGenerateContent'));
     if (url.pathname === '/redirect') {
@@ -152,6 +204,11 @@ async function fixtureServer() {
         text += chunk;
       }
       const body = JSON.parse(text);
+      if (url.pathname.startsWith('/legacy/') && body.stream_options) {
+        response.writeHead(400, { 'Content-Type': 'application/json' })
+          .end(JSON.stringify({ error: { message: 'Unrecognized request argument: stream_options' } }));
+        return;
+      }
       const sessionPrompt = protocol === 'chat-completions' && body.messages.at(-1)?.content;
       if (typeof sessionPrompt === 'string' && sessionPrompt.startsWith('Session header check ')) {
         assert.equal(request.headers['x-session-id'], sessionPrompt.endsWith('separate chat') ? 'session-b' : 'session-a');
@@ -185,11 +242,26 @@ async function fixtureServer() {
         }
       }
       const streaming = protocol === 'gemini-generate-content' ? url.searchParams.get('alt') === 'sse' : body.stream;
-      if (!streaming) {
+      if (!streaming || sessionPrompt === 'Usage JSON fallback') {
         response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(nonStreamingReply(protocol)));
         return;
       }
-      const chunks = Buffer.from(sse(mockReply(protocol, body)));
+      let events = mockReply(protocol, body);
+      if (sessionPrompt === 'Usage without token counts') {
+        events = events.filter(event => !event.usage);
+      } else if (sessionPrompt === 'Usage without cache counts') {
+        delete events.find(event => event.usage).usage.prompt_tokens_details;
+        response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        response.write(sse([{ choices: [{ delta: { reasoning_content: 'hidden reasoning' } }] }]));
+        await wait(100);
+        response.write(sse(events.slice(0, 1)));
+        await wait(150);
+        response.write(sse(events.slice(1, 2)));
+        await wait(300);
+        response.end(sse(events.slice(2)));
+        return;
+      }
+      const chunks = Buffer.from(sse(events));
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
       for (let offset = 0; offset < chunks.length; offset += 23) {
         response.write(chunks.subarray(offset, offset + 23));
@@ -217,4 +289,4 @@ async function fixtureServer() {
   };
 }
 
-module.exports = { answer, apiKey, args, callId, fixtureServer, mockReply, nonStreamingReply, png, protocolPaths, sse, toolName };
+module.exports = { answer, apiKey, args, callId, expectedUsage, fixtureServer, mockReply, nonStreamingReply, png, protocolPaths, sse, toolName };

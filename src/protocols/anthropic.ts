@@ -1,5 +1,8 @@
 import { JsonObject, object, string } from '../config';
-import { Adapter, argumentsObject, checkStreamError, records, Request, schema, systemText, toolCall } from './types';
+import {
+  Adapter, argumentsObject, checkStreamError, records, Request, schema, systemText,
+  tokenCount, tokenUsage, toolCall, updateUsage,
+} from './types';
 
 function messages(request: Request): JsonObject[] {
   const result: { role: string; content: JsonObject[] }[] = [];
@@ -81,11 +84,13 @@ export const anthropicMessages: Adapter = {
     const blocks = new Map<number, { block: JsonObject; arguments: string }>();
     let items: JsonObject[] = [];
     let finished = false;
+    let counts: JsonObject = {};
     for await (const event of events) {
       checkStreamError(event);
       const { data } = event;
       const type = string(data.type) || event.name;
       if (event.json) {
+        counts = object(data.usage);
         items = records(data.content);
         for (const block of items) {
           if (block.type === 'text' && string(block.text)) {
@@ -94,6 +99,9 @@ export const anthropicMessages: Adapter = {
         }
         finished = true;
         break;
+      }
+      if (type === 'message_start' || type === 'message_delta') {
+        counts = updateUsage(counts, type === 'message_start' ? object(data.message).usage : data.usage);
       }
       if (type === 'message_stop') {
         finished = true;
@@ -140,6 +148,13 @@ export const anthropicMessages: Adapter = {
       .map(item => toolCall(item.id, item.name, item.input));
     calls.forEach(report);
     const supported = items.filter(item => ['text', 'tool_use', 'thinking', 'redacted_thinking'].includes(string(item.type)));
-    return supported.length ? { items: supported, callIds: calls.map(call => call.id) } : undefined;
+    const input = tokenCount(counts.input_tokens);
+    const cached = tokenCount(counts.cache_read_input_tokens);
+    const cacheWrite = tokenCount(counts.cache_creation_input_tokens);
+    return {
+      native: supported.length ? { items: supported, callIds: calls.map(call => call.id) } : undefined,
+      usage: tokenUsage(input === undefined ? undefined : input + (cached ?? 0) + (cacheWrite ?? 0),
+        counts.output_tokens, undefined, { cached, cacheWrite, reasoning: object(counts.output_tokens_details).thinking_tokens }),
+    };
   },
 };

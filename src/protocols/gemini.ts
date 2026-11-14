@@ -2,10 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { JsonObject, object, string } from '../config';
 import {
   Adapter, argumentsObject, callName, checkStreamError, findCallNames, Image, records,
-  Request, schema, systemText, Text, textParts, ToolCall, toolCall,
+  Request, schema, systemText, Text, textParts, tokenCount, tokenUsage, ToolCall, toolCall, updateUsage,
 } from './types';
 
 const generatedCallId = 'copilot-custom-api-';
+
+function geminiUsage(prompt: unknown, toolPrompt: unknown, output: unknown, thoughts: unknown, total: unknown, cached: unknown) {
+  const input = tokenCount(prompt);
+  const toolInput = tokenCount(toolPrompt) ?? 0;
+  const response = tokenCount(output);
+  const reasoning = tokenCount(thoughts);
+  return tokenUsage(input === undefined ? undefined : input + toolInput,
+    response === undefined ? undefined : response + (reasoning ?? 0), total, { cached, reasoning });
+}
 
 function generateContents(request: Request): JsonObject[] {
   const names = findCallNames(request.messages);
@@ -80,6 +89,7 @@ export const geminiGenerateContent: Adapter = {
     const calls: ToolCall[] = [];
     const items: JsonObject[] = [];
     let finished = false;
+    let counts: JsonObject = {};
     for await (const event of events) {
       checkStreamError(event);
       if (event.name === '[DONE]') {
@@ -89,6 +99,7 @@ export const geminiGenerateContent: Adapter = {
       if (object(event.data.promptFeedback).blockReason) {
         throw new Error('Gemini blocked the request.');
       }
+      counts = updateUsage(counts, event.data.usageMetadata);
       const candidates = records(event.data.candidates);
       const candidate = candidates.find(item => item.index === 0) ?? candidates[0];
       if (!candidate) {
@@ -128,7 +139,11 @@ export const geminiGenerateContent: Adapter = {
       throw new Error('The Gemini GenerateContent stream ended before completion.');
     }
     calls.forEach(report);
-    return items.length ? { items, callIds: calls.map(call => call.id) } : undefined;
+    return {
+      native: items.length ? { items, callIds: calls.map(call => call.id) } : undefined,
+      usage: geminiUsage(counts.promptTokenCount, counts.toolUsePromptTokenCount, counts.candidatesTokenCount,
+        counts.thoughtsTokenCount, counts.totalTokenCount, counts.cachedContentTokenCount),
+    };
   },
 };
 
@@ -214,6 +229,7 @@ export const geminiInteractions: Adapter = {
     let items: JsonObject[] = [];
     let finished = false;
     let streamed = false;
+    let counts: JsonObject = {};
     const reportContent = (block: JsonObject) => reportInteractionContent(block, part => {
       streamed = true;
       report(part);
@@ -228,6 +244,7 @@ export const geminiInteractions: Adapter = {
         throw new Error('Gemini did not complete the interaction.');
       }
       if (event.json || type === 'interaction.completed') {
+        counts = object(interaction.usage ?? data.usage);
         items = records(interaction.steps);
         if (!streamed) {
           for (const item of items) {
@@ -285,6 +302,10 @@ export const geminiInteractions: Adapter = {
       .map(item => toolCall(item.id, item.name, item.arguments));
     calls.forEach(report);
     const supported = items.filter(item => ['thought', 'model_output', 'function_call'].includes(string(item.type)));
-    return supported.length ? { items: supported, callIds: calls.map(call => call.id) } : undefined;
+    return {
+      native: supported.length ? { items: supported, callIds: calls.map(call => call.id) } : undefined,
+      usage: geminiUsage(counts.total_input_tokens, counts.total_tool_use_tokens, counts.total_output_tokens,
+        counts.total_thought_tokens, counts.total_tokens, counts.total_cached_tokens),
+    };
   },
 };

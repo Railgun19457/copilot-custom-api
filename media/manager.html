@@ -24,7 +24,10 @@
         <div class="rail-heading"><h2>Providers</h2><span id="provider-count"></span></div>
         <div id="provider-list" class="provider-list"></div>
         <button type="button" class="new-provider" id="new-provider"><span aria-hidden="true">＋</span> Add provider</button>
-        <button type="button" class="model-settings-link" id="open-model-settings">Model settings</button>
+        <div class="rail-links">
+          <button type="button" id="open-model-settings">Model settings</button>
+          <button type="button" id="open-usage">Usage statistics</button>
+        </div>
       </nav>
       <main id="main">
         <p id="loading" role="status">Loading providers…</p>
@@ -119,6 +122,56 @@
             </fieldset>
             <p id="routing-status" class="notice" role="status" hidden></p>
           </form>
+        </section>
+        <section id="usage-page" hidden aria-labelledby="usage-title">
+          <header class="editor-heading">
+            <div class="editor-title"><h2 id="usage-title">Usage statistics</h2></div>
+            <button type="button" id="refresh-usage">Refresh</button>
+          </header>
+          <div class="usage-filters">
+            <label>Date range <select id="usage-period">
+              <option value="1">Today</option><option value="7" selected>Last 7 days</option>
+              <option value="30">Last 30 days</option><option value="90">Last 90 days</option>
+            </select></label>
+            <label>Provider <select id="usage-provider"></select></label>
+            <label>Model <select id="usage-model"></select></label>
+          </div>
+          <p id="usage-status" class="notice" role="status" hidden></p>
+          <div id="usage-empty" class="empty" hidden><h3>No requests in this range</h3><p>Usage will appear here after a model request completes.</p></div>
+          <div id="usage-results" hidden>
+            <dl class="usage-metrics">
+              <div><dt>Total tokens</dt><dd id="usage-total"></dd></div>
+              <div><dt>Input tokens</dt><dd id="usage-input"></dd></div>
+              <div><dt>Output tokens</dt><dd id="usage-output"></dd></div>
+              <div><dt>Requests</dt><dd id="usage-requests"></dd><dd id="usage-succeeded" class="hint usage-metric-note"></dd></div>
+              <div><dt>Failed requests</dt><dd id="usage-failed"></dd></div>
+              <div><dt>Success rate</dt><dd id="usage-success-rate"></dd></div>
+              <div><dt>Cache hit rate</dt><dd id="usage-cache-rate"></dd></div>
+              <div><dt>Avg. time to first text</dt><dd id="usage-first-text"></dd></div>
+              <div><dt>Avg. non-streaming duration</dt><dd id="usage-non-stream"></dd></div>
+            </dl>
+            <section class="settings-card usage-trend" aria-labelledby="usage-trend-title">
+              <header class="section-heading">
+                <h3 id="usage-trend-title">Daily token usage</h3>
+                <div class="usage-legend"><span>Input tokens</span><span>Output tokens</span></div>
+              </header>
+              <div id="usage-chart" class="usage-chart"></div>
+              <p id="usage-chart-detail" class="hint usage-chart-detail"></p>
+            </section>
+            <section class="settings-card" aria-labelledby="usage-breakdown-title">
+              <h3 id="usage-breakdown-title">Usage by provider and model</h3>
+              <div class="usage-table-wrap" tabindex="0" role="region" aria-labelledby="usage-breakdown-title">
+                <table class="usage-table" aria-labelledby="usage-breakdown-title">
+                  <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Requests</th>
+                    <th scope="col">Success rate</th><th scope="col">Avg. time to first text</th><th scope="col">Avg. non-streaming duration</th>
+                    <th scope="col">Output TPS</th><th scope="col">Input tokens</th>
+                    <th scope="col">Output tokens</th><th scope="col">Cached input</th><th scope="col">Reasoning tokens</th>
+                    <th scope="col">Total tokens</th></tr></thead>
+                  <tbody id="usage-breakdown"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
         </section>
       </main>
     </div>

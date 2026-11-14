@@ -1,5 +1,6 @@
 {
   "command.openManager": "Open Provider Manager",
+  "command.openUsage": "Open Usage Statistics",
   "command.newProvider": "New Provider",
   "command.openProvider": "Open Provider",
   "command.manageWizard": "Manage Providers",

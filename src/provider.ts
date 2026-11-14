@@ -1,17 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import { Connection, effectiveReasoningEffort, endpoint, Model, modelConnection, object, parseUrl, requestHeaders, string, validateHeader } from './config';
-import { post, readEvents } from './http';
+import { isEventStream, post, readEvents } from './http';
 import { anthropicMessages } from './protocols/anthropic';
 import { geminiGenerateContent, geminiInteractions } from './protocols/gemini';
 import { chatCompletions, responses } from './protocols/openai';
-import { Adapter, Image, Message, NativeTurn, Part, Request, Text, ToolCall } from './protocols/types';
+import { Adapter, Image, Message, NativeTurn, Part, Request, ResponseMetadata, Text, ToolCall } from './protocols/types';
 import { Channel, ChannelHealth, channelSelectionId, groupChannels, routedModelId } from './routing';
+import { ResponseTiming, UsageStore } from './usage';
 
 export const vendor = 'copilot-custom-api';
 export const settingsKey = 'copilotCustomApi.providers';
 const turnMime = 'application/vnd.copilot-custom-api.turn+json';
 const sessionMime = 'application/vnd.copilot-custom-api.session+json';
+// Copilot Chat and the VS Code agent-host BYOK bridge consume this data part.
+const usageMime = 'usage';
 const timeoutMs = 300_000;
 const adapters = {
   'chat-completions': chatCompletions,
@@ -100,6 +103,7 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
     private readonly connections: () => Record<string, Connection>,
     private readonly secrets: vscode.SecretStorage,
     private readonly routingEnabled: () => boolean,
+    private readonly usageStats: UsageStore,
   ) {}
 
   refresh(): void {
@@ -284,7 +288,7 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
     const maxOutputTokens = typeof requestedMax === 'number' && Number.isSafeInteger(requestedMax) && requestedMax > 0
       ? Math.min(requestedMax, model.maxOutputTokens) : undefined;
     const calls: ToolCall[] = [];
-    const native = await this.send(connectionId, route, {
+    const { native, usage } = await this.send(connectionId, route, {
       model: { ...model, reasoningEffort },
       url,
       messages: converted,
@@ -329,6 +333,9 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
       this.callSessions.set(ids[index], { id: rememberedSessionId, scope: sessionScope, created: Date.now() });
       progress.report(new vscode.LanguageModelToolCallPart(ids[index], call.name, call.input));
     }
+    if (usage) {
+      progress.report(vscode.LanguageModelDataPart.json(usage, usageMime));
+    }
   }
 
   async test(connectionId: string, connection: Connection, model: Model, token: vscode.CancellationToken): Promise<void> {
@@ -349,7 +356,7 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
     sessionId: string,
     token: vscode.CancellationToken,
     report: (part: Text | Image | ToolCall) => void,
-  ): Promise<NativeTurn | undefined> {
+  ): Promise<ResponseMetadata> {
     if (token.isCancellationRequested) {
       throw new vscode.CancellationError();
     }
@@ -364,6 +371,8 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
     const controller = new AbortController();
     const subscription = token.onCancellationRequested(() => controller.abort());
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const source = { providerId: connectionId, provider: connection.name, modelId: request.model.id, model: request.model.name };
+    let startedAt: number | undefined;
     try {
       if (token.isCancellationRequested) {
         throw new vscode.CancellationError();
@@ -382,11 +391,30 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
         },
       });
       const adapter = adapters[connection.protocol];
-      const response = await post(request.url, headers, adapter.build(request), controller.signal);
+      const optionalStreamUsage = connection.protocol === 'chat-completions' && request.model.streaming &&
+        request.model.options.stream_options === undefined;
+      const body = adapter.build(request);
+      if (controller.signal.aborted) {
+        throw controller.signal.reason;
+      }
+      startedAt = performance.now();
+      const response = await post(request.url, headers, body, controller.signal, optionalStreamUsage);
+      const streaming = isEventStream(response, request.model.streaming);
+      let firstTextAt: number | undefined;
+      let lastTextAt: number | undefined;
+      let textOnly = true;
       let received = false;
-      const native = await adapter.read(readEvents(response, request.model.streaming), part => {
+      const metadata = await adapter.read(readEvents(response, request.model.streaming), part => {
         received = true;
         if (!token.isCancellationRequested) {
+          if (streaming) {
+            if (part.type !== 'text') {
+              textOnly = false;
+            } else if (firstTextAt !== undefined || part.text.trim()) {
+              lastTextAt = performance.now();
+              firstTextAt ??= lastTextAt;
+            }
+          }
           report(part);
         }
       });
@@ -396,10 +424,20 @@ export class CustomApiProvider implements vscode.LanguageModelChatProvider<Regis
       if (!received) {
         throw new Error('The endpoint returned no text, image, or tool call.');
       }
-      return native;
+      const timing: ResponseTiming = streaming ? {
+        mode: 'stream',
+        firstTextMs: firstTextAt === undefined ? undefined : Math.round(firstTextAt - startedAt),
+        textSpanMs: textOnly && firstTextAt !== undefined && lastTextAt !== undefined
+          ? Math.floor(lastTextAt - firstTextAt) : undefined,
+      } : { mode: 'json', durationMs: Math.round(performance.now() - startedAt) };
+      this.usageStats.record(source, { outcome: 'success', usage: metadata.usage, timing });
+      return metadata;
     } catch (error) {
       if (token.isCancellationRequested) {
         throw new vscode.CancellationError();
+      }
+      if (startedAt !== undefined && !(error instanceof vscode.CancellationError)) {
+        this.usageStats.record(source, { outcome: 'failure' });
       }
       if (controller.signal.aborted) {
         throw new Error('The model request timed out.');
