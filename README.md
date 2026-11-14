@@ -101,3 +101,16 @@ npm run package
 集成测试默认下载 VS Code 1.145.3，使用独立用户数据和本地模拟端点。设置 `VSCODE_EXECUTABLE` 可改用本机已安装的 VS Code。打包产物为仓库根目录下的 `copilot-custom-api-<version>.vsix`。
 
 扩展源码在 `src/`，管理页资源在 `media/`，测试在 `test/`。
+
+## 发布
+
+在 Visual Studio Marketplace 的发布者 `copilot-custom-api` 下创建 **Trusted Publishing** 策略。Repository owner 填 `Railgun19457`，Repository 填 `copilot-custom-api`，Workflow 填 `publish.yml`，Environment 留空。[发布者管理后台](https://marketplace.visualstudio.com/manage) · [OIDC 配置文档](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#publish-with-github-actions-and-trusted-publishing)
+
+更新并提交 `package.json` 和 `package-lock.json` 的版本后，推送对应标签。Marketplace 上的每次发布都需要独立的数字版本。
+
+| 发布渠道 | 标签示例 | 扩展版本 |
+| --- | --- | --- |
+| Beta | `v0.5.3-beta.1` | `0.5.3` |
+| 正式版 | `v0.6.0` | `0.6.0` |
+
+**Publish extension** 会跑测试并构建 VSIX，再用同一个包发布到 Marketplace 和 GitHub Releases。也可以在 Actions 页手动运行，选择 Beta 或正式版来验证构建并下载 VSIX。手动运行只执行测试和打包。
