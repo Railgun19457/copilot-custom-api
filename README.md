@@ -25,11 +25,13 @@ Copilot Custom API 是一个把自定义 API 模型接入 VS Code Copilot Chat �
 
 ## 快速开始
 
-1. 在 VS Code 扩展面板菜单选择 **从 VSIX 安装…**，选择安装包。也可按下方的开发命令从源码打包。
+1. 在 VS Code 扩展面板搜索 `@id:Railgun19457.copilot-custom-api` 并安装。也可下载 GitHub Releases 的 VSIX，在扩展面板菜单选择 **从 VSIX 安装…**。
 2. 打开活动栏 **Copilot Custom API**，点击 **新建供应商**。填入名称、API 协议、端点地址和鉴权信息。
 3. 在 **模型** 页点击 **获取模型**，勾选需要的模型。也可以点 **手动添加**，填入端点接受的 API 模型 ID。
 4. 核对 Token 上限和模型能力，点击 **保存供应商**，再展开模型点击 **测试模型**。
 5. 在 Copilot Chat 的模型选择器中选用已保存的模型。若模型被隐藏，可在 **Chat: Manage Language Models** 中显示它。
+
+从 0.5.x Beta 换到 0.6.0 时，请禁用或卸载旧的 `copilot-custom-api.copilot-custom-api`。供应商和模型仍从原有用户设置读取。新版使用自己的密钥存储，请在管理页重新输入各供应商的 API 密钥，并按需重新开启跨渠道路由。
 
 ## 界面说明
 
@@ -104,7 +106,7 @@ npm run package
 
 ## 发布
 
-在 Visual Studio Marketplace 的发布者 `copilot-custom-api` 下创建 **Trusted Publishing** 策略。Repository owner 填 `Railgun19457`，Repository 填 `copilot-custom-api`，Workflow 填 `publish.yml`，Environment 留空。[发布者管理后台](https://marketplace.visualstudio.com/manage) · [OIDC 配置文档](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#publish-with-github-actions-and-trusted-publishing)
+在 Visual Studio Marketplace 的发布者 `Railgun19457` 下创建 **Trusted Publishing** 策略。Repository owner 填 `Railgun19457`，Repository 填 `copilot-custom-api`，Workflow 填 `publish.yml`，Environment 留空。[发布者管理后台](https://marketplace.visualstudio.com/manage) · [OIDC 配置文档](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#publish-with-github-actions-and-trusted-publishing)
 
 更新并提交 `package.json` 和 `package-lock.json` 的版本后，推送对应标签。Marketplace 上的每次发布都需要独立的数字版本。
 

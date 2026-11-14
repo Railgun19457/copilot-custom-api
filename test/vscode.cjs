@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const vscode = require('vscode');
+const { name, publisher } = require('../package.json');
 const { answer, apiKey, args, png, protocolPaths, toolName } = require('./fixture.cjs');
 const { createAuthenticatedModel, editProviderInManager } = require('./quick-input.cjs');
 const { routedModelId } = require('../out/routing');
@@ -40,7 +41,7 @@ async function run() {
   const profile = process.env.CUSTOM_API_TEST_PROFILE;
   const baseUrl = process.env.CUSTOM_API_TEST_URL;
   assert.ok(baseUrl);
-  const ext = vscode.extensions.getExtension('copilot-custom-api.copilot-custom-api');
+  const ext = vscode.extensions.getExtension(`${publisher}.${name}`);
   assert.ok(ext, 'The development extension should be installed');
 
   const makeProvider = (protocol, url = baseUrl) => ({

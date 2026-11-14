@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const { setTimeout: wait } = require('node:timers/promises');
+const { name, publisher } = require('../package.json');
+
+const extensionId = `${publisher}.${name}`.toLowerCase();
 
 async function eventually(fn, description) {
   const until = Date.now() + 10_000;
@@ -79,8 +82,12 @@ async function workbench(port) {
     async manager() {
       const getManager = await eventually(async () => {
         const { targetInfos } = await send('Target.getTargets');
-        return targetInfos.find(item => item.type === 'iframe' && item.url.includes('/index.html') &&
-          /extensionId=(?:copilot-custom-api|copilotCustomApi)/i.test(item.url));
+        return targetInfos.find(item => {
+          if (item.type !== 'iframe' || !item.url.includes('/index.html')) {
+            return false;
+          }
+          return new URL(item.url).searchParams.get('extensionId')?.toLowerCase() === extensionId;
+        });
       }, 'the Provider Manager webview');
       const { sessionId } = await send('Target.attachToTarget', { targetId: getManager.targetId, flatten: true });
       return async (fn, ...args) => {
